@@ -91,10 +91,14 @@ def walk(node: Any) -> Iterable[dict[str, Any]]:
 
 def run_tool(command: list[str], timeout: int = 45) -> dict[str, Any]:
     try:
-        proc = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+        # The compiler's textual disassembly may contain arbitrary string bytes.
+        # Preserve strict UTF-8 for AST JSON; replacement is appropriate only
+        # for human-readable compiler/analyzer diagnostics.
+        decode_errors = "strict" if Path(command[0]).name == "luau-ast" else "replace"
+        proc = subprocess.run(command, text=True, encoding="utf-8", errors=decode_errors, capture_output=True, timeout=timeout)
         return {"ok": proc.returncode == 0, "exit_code": proc.returncode,
                 "stdout": proc.stdout, "stderr": proc.stderr}
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, UnicodeDecodeError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "exit_code": None, "stdout": "", "stderr": str(exc)}
 
 
@@ -128,7 +132,15 @@ def _location_offsets(source: str, location: str) -> tuple[int, int]:
         total += len(line)
     if not lines:
         return 0, 0
-    return starts[sl] + sc, starts[el] + ec
+    def character_offset(line: str, byte_column: int) -> int:
+        encoded = line.encode("utf-8")
+        if byte_column > len(encoded):
+            raise ValueError(f"AST byte column {byte_column} outside source line")
+        # Fail closed rather than cut through a UTF-8 code point.
+        return len(encoded[:byte_column].decode("utf-8", errors="strict"))
+    if sl >= len(lines) or el >= len(lines):
+        raise ValueError(f"AST location outside source: {location}")
+    return starts[sl] + character_offset(lines[sl], sc), starts[el] + character_offset(lines[el], ec)
 
 
 def semantic_rewrite_r6(source: str, ast: dict[str, Any], provenance: Any) -> tuple[str, dict[str, Any]]:
