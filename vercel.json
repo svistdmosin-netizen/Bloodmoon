@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb",
+        "includeFiles": [
+          "hybrid_moveset_converter.py",
+          "preservation_audit.py",
+          "chunked_planner.py",
+          "knowledge_base.py",
+          "declarative_repair_audit.py",
+          "hub_moveset_converter.py",
+          "luau_moveset_mind.py",
+          "static/**",
+          "semantic_moveset_converter.py",
+          "luau_provenance.py",
+          "luau_moveset_converter.py",
+          "luau_animation_ast_validator.py",
+          "tools/luau/**"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ]
+}
