@@ -1,0 +1,2 @@
+.field-row.single-field{grid-template-columns:minmax(0,1fr)}
+.field-row.single-field label{width:100%}
