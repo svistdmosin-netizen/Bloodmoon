@@ -41,8 +41,10 @@ STATIC = ROOT / "static" if (ROOT / "static").is_dir() else ROOT
 MAX_UPLOAD = 4 * 1024 * 1024
 ALLOWED = {".lua", ".luau", ".txt"}
 AI_ENDPOINT = "https://api.kilo.ai/api/gateway/chat/completions"
-AI_MODEL = "cohere/north-mini-code:free"
-AI_PROVIDER = "Kilo Gateway free fallback"
+AI_MODEL = "reflection/beam-free"
+ORCAROUTER_ENDPOINT = "https://api.orcarouter.ai/v1/chat/completions"
+ORCAROUTER_MODEL = "z-ai/glm-5.3-flash-free"
+AI_PROVIDER = "OrcaRouter GLM-5.3-Flash with Kilo Beam fallback"
 PAID_PROVIDERS = {
     "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "cohere/north-mini-code:free"),
     "openai": ("https://api.openai.com/v1/chat/completions", "gpt-5.1"),
@@ -408,26 +410,36 @@ def call_planner(prompt: str, provider: str, api_key: str, requested_model: str)
         raise HTTPException(400, "Unsupported AI provider")
     if not free and not api_key.strip():
         raise HTTPException(400, "An API key is required for the selected provider")
-    endpoint, default_model = (AI_ENDPOINT, AI_MODEL) if free else PAID_PROVIDERS[provider]
-    # Anonymous/free conversions use one fixed model so separate chunks do not
-    # silently route to different backends. BYOK providers may override it.
+    orca_key = os.environ.get("ORCAROUTER_API_KEY", "").strip() if free else ""
+    if free and orca_key:
+        endpoint, default_model = ORCAROUTER_ENDPOINT, ORCAROUTER_MODEL
+        effective_provider = "orcarouter"
+    else:
+        endpoint, default_model = (AI_ENDPOINT, AI_MODEL) if free else PAID_PROVIDERS[provider]
+        effective_provider = provider
+    # Free conversion uses one fixed model so chunks cannot silently route to
+    # different backends. Explicit BYOK providers may override their model.
     model = default_model if free else (requested_model.strip()[:150] or default_model)
     headers = {"Content-Type": "application/json", "User-Agent": "Bloodmoon-Converter/2.0"}
+    if orca_key:
+        headers["Authorization"] = "Bearer " + orca_key
     if provider == "anthropic":
         headers.update({"x-api-key": api_key.strip(), "anthropic-version": "2023-06-01"})
         body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 24000}
     else:
         if not free:
             headers["Authorization"] = "Bearer " + api_key.strip()
-        body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "top_p": 1, "max_tokens": 32000}
+        body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 32000}
         if provider == "openrouter":
             headers.update({"HTTP-Referer": "https://bloodmoon-six.vercel.app", "X-Title": "Bloodmoon"})
             body.update({"include_reasoning": False, "reasoning_effort": "none"})
-        if free:
-            # North Mini Code supports deterministic sampling controls but does
-            # not advertise response_format/structured_outputs in Kilo's model
-            # metadata, so JSON is enforced by the prompt and parser retries.
-            body.update({"include_reasoning": False, "seed": 42})
+        if free and orca_key:
+            # GLM-5.3-Flash supports structured JSON and long outputs.
+            body.update({"max_tokens": 64000, "response_format": {"type": "json_object"}})
+        elif free:
+            # Beam does not advertise seed or response_format support. JSON is
+            # enforced by the migration prompt and the fail-closed parser.
+            body.update({"include_reasoning": False})
         elif provider == "kilo":
             body.update({"include_reasoning": False})
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
@@ -436,9 +448,9 @@ def call_planner(prompt: str, provider: str, api_key: str, requested_model: str)
             result = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[-1200:]
-        raise HTTPException(exc.code if exc.code in {400, 401, 402, 403, 429} else 502, f"{provider} request failed ({exc.code}): {detail}")
+        raise HTTPException(exc.code if exc.code in {400, 401, 402, 403, 429} else 502, f"{effective_provider} request failed ({exc.code}): {detail}")
     except Exception as exc:
-        raise HTTPException(502, f"{provider} is unavailable: {exc}")
+        raise HTTPException(502, f"{effective_provider} is unavailable: {exc}")
     if provider == "anthropic":
         content = "".join(x.get("text", "") for x in result.get("content", []) if x.get("type") == "text")
         finish = result.get("stop_reason")
@@ -452,7 +464,7 @@ def call_planner(prompt: str, provider: str, api_key: str, requested_model: str)
         raise HTTPException(502, f"{provider} returned an empty migration plan")
     if finish in {"length", "max_tokens"}:
         raise HTTPException(502, f"{provider} exhausted the response budget; no truncated plan was packaged")
-    return content, provider, model
+    return content, effective_provider, model
 
 @app.post("/api/ai-convert")
 async def ai_convert(file: UploadFile = File(...), name: str = Form(""), description: str = Form(""), provider: str = Form("free"), api_key: str = Form(""), model: str = Form("")):
