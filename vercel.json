@@ -15,14 +15,14 @@
           "hub_moveset_converter.py",
           "luau_moveset_mind.py",
           "static/**",
-          "ralsei-walk.png",
-          "ralsei-magic.png",
-          "ralsei-egg.js",
           "semantic_moveset_converter.py",
           "luau_provenance.py",
           "luau_moveset_converter.py",
           "luau_animation_ast_validator.py",
-          "tools/luau/**"
+          "luau-compile",
+          "luau-ast",
+          "luau-analyze",
+          "ralsei-sitting.webp"
         ]
       }
     }
