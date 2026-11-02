@@ -41,7 +41,7 @@ STATIC = ROOT / "static" if (ROOT / "static").is_dir() else ROOT
 MAX_UPLOAD = 4 * 1024 * 1024
 ALLOWED = {".lua", ".luau", ".txt"}
 AI_ENDPOINT = "https://api.kilo.ai/api/gateway/chat/completions"
-AI_MODEL = "nvidia/nemotron-3.5-super-vl:free"
+AI_MODEL = "cohere/north-mini-code:free"
 AI_PROVIDER = "Kilo Gateway free fallback"
 PAID_PROVIDERS = {
     "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "cohere/north-mini-code:free"),
@@ -424,7 +424,10 @@ def call_planner(prompt: str, provider: str, api_key: str, requested_model: str)
             headers.update({"HTTP-Referer": "https://bloodmoon-six.vercel.app", "X-Title": "Bloodmoon"})
             body.update({"include_reasoning": False, "reasoning_effort": "none"})
         if free:
-            body.update({"include_reasoning": False, "seed": 42, "response_format": {"type": "json_object"}})
+            # North Mini Code supports deterministic sampling controls but does
+            # not advertise response_format/structured_outputs in Kilo's model
+            # metadata, so JSON is enforced by the prompt and parser retries.
+            body.update({"include_reasoning": False, "seed": 42})
         elif provider == "kilo":
             body.update({"include_reasoning": False})
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
