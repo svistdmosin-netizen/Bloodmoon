@@ -60,7 +60,11 @@ function render(out){
   $('#blockers').textContent=(m.blockers||[]).length;
   $('#keys').innerHTML=(m.keys||[]).map(k=>`<span class="chip">${esc(String(k).toUpperCase())}</span>`).join('')||'<span class="chip">NONE</span>';
   const ass=m.assets||{};
-  $('#assets').innerHTML=`<b>${(ass.sounds||[]).length} SOUNDS</b><b>${(ass.meshes||[]).length} MESHES</b><b>${(ass.textures||[]).length} TEXTURES</b>`;
+  if(Array.isArray(ass.ids)||Array.isArray(ass.urls)){
+    $('#assets').innerHTML=`<b>${(ass.ids||[]).length} ASSET IDS</b><b>${(ass.urls||[]).length} URLS</b>`;
+  }else{
+    $('#assets').innerHTML=`<b>${(ass.sounds||[]).length} SOUNDS</b><b>${(ass.meshes||[]).length} MESHES</b><b>${(ass.textures||[]).length} TEXTURES</b>`;
+  }
   $('#roles').innerHTML=(m.roles||[]).map(x=>`<div class="role"><div><b>${esc(x.name)}</b><span>Line ${x.line}</span></div><i>${esc(x.role)}</i></div>`).join('');
   $('#risks').innerHTML=(m.blockers||[]).map(x=>`<div class="risk ${esc(x.severity)}"><div><b>${esc(x.type)}</b><span>${esc(x.message||JSON.stringify(x.lines||x.items||[]))}</span></div><strong>${esc(x.severity)}</strong></div>`).join('')||'<div class="risk"><b>No static blockers detected.</b></div>';
   $('#overview').textContent=out.overview||'';

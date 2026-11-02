@@ -172,17 +172,33 @@ async def deterministic_convert(
         report["declarative_repair_audit"] = repair_audit
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     semantic = report.get("semantic_ir") or {}
-    controls = semantic.get("pc_inputs") or {}
-    keys = [key for key, count in controls.items() if count]
+    ability_items = semantic.get("abilities") or []
+    ability_names = []
+    roles = []
+    for item in ability_items:
+        if isinstance(item, str):
+            name_value = item
+            line_value = "?"
+        elif isinstance(item, dict):
+            name_value = str(item.get("name") or item.get("key") or "ability")
+            line_value = item.get("line", "?")
+        else:
+            continue
+        if name_value not in ability_names:
+            ability_names.append(name_value)
+            roles.append({"name": name_value, "line": line_value, "role": "ability/input"})
+    dependencies = semantic.get("external_dependencies") or []
+    asset_ids = sorted({str(item)[6:] for item in dependencies if str(item).startswith("asset:")})
+    external_urls = sorted({str(item)[4:] for item in dependencies if str(item).startswith("url:")})
     status = report.get("status", "VALIDATION_FAILED")
     readiness = 0.72 if status == "RUNTIME_TEST_REQUIRED" else (0.35 if output.exists() else 0.0)
     manifest = {
         "source": source_name,
         "architecture": {"kind": semantic.get("family", "unknown"), "confidence": 1.0 if semantic.get("family") else 0.0},
         "readiness": readiness,
-        "roles": [{"name": item.get("name", "ability"), "line": item.get("line", "?"), "role": "ability"} for item in semantic.get("abilities", []) if isinstance(item, dict)],
-        "keys": keys,
-        "assets": {"sounds": [], "meshes": [], "textures": []},
+        "roles": roles,
+        "keys": ability_names,
+        "assets": {"ids": asset_ids, "urls": external_urls},
         "blockers": [{"type": "BLOCKER", "severity": "high", "message": str(item)} for item in blockers],
         "status": status,
     }
