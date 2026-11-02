@@ -41,7 +41,7 @@ STATIC = ROOT / "static" if (ROOT / "static").is_dir() else ROOT
 MAX_UPLOAD = 4 * 1024 * 1024
 ALLOWED = {".lua", ".luau", ".txt"}
 AI_ENDPOINT = "https://api.kilo.ai/api/gateway/chat/completions"
-AI_MODEL = "reflection/beam-free"
+AI_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 AI_PROVIDER = "Kilo Gateway free fallback"
 PAID_PROVIDERS = {
     "openrouter": ("https://openrouter.ai/api/v1/chat/completions", "cohere/north-mini-code:free"),
@@ -332,7 +332,7 @@ Hub rules:
 - Prefer the direct hub-scope helper SetC0C1Joint(joint, c0, c1, scale) when applying C0/C1 poses. It is a function, never a Motor6D method: do not test joint.SetC0C1Joint and do not call joint:SetC0C1Joint. Its semantic target is: t = c0 * c1:Inverse(); scale its translation; then j.Transform = j.C0:Inverse() * t * j.C1. Preserve the original pose mathematics and timing.
 - Keep a module-scope state table such as state.figure, state.joints, state.created, state.connections, state.actions, state.pose, state.attack, state.sine, and state.effects. Init fills it, Update consumes it every frame, abilities mutate it, and Destroy clears it.
 - ContextActions:BindAction registers keyboard and touch controls. SetTitle and SetPosition for every action. Unbind every action in Destroy.
-- Use ReanimateFling only during intentional attack hit phases and never target figure, LocalPlayer.Character, their descendants, or _G.Uhhhhhh.Character.
+- Never emit ReanimateFling, fling, permadeath, character-death, or respawn-bypass behavior. Preserve safe visible effects and record omitted unsafe behavior.
 - HatReanimator.HatCFrameOverride entries added in Init must be removed in Destroy.
 - Track and disconnect every RBXScriptConnection. Destroy temporary instances and restore modified Humanoid, camera and joint state.
 - Preserve abilities, animation modes, sounds, effects and key mappings whenever their behavior exists in the source.
@@ -349,7 +349,7 @@ Hub rules:
 - Preserve source interpolation semantics. A source that animates both C0 and C1 needs both sides represented through SetC0C1Joint or an equivalent transform calculation; copying only one side changes the pose.
 - Convert blocking attack loops into task-spawned ability state machines or bounded tasks that set and clear attack/debounce flags. They must not block m.Update forever, and ordinary locomotion poses must pause or blend correctly while an attack owns the joints.
 - Convert every mouse click and key handler into named abilities and ContextActions. The output must not retain Mouse.KeyDown, Mouse.KeyUp, Mouse.Button1Down, UserInputService.InputBegan, or InputEnded as the primary control wiring. For aim-dependent attacks, read the local mouse only for its Hit/world target; never use LocalPlayer.Character as the controlled rig.
-- Use the actual direct hub-scope control object ContextActions, never _G.Uhhhhhh.ContextActions. For each action call ContextActions:BindAction(uniqueName, callback, true, keyOrInput), run only on Enum.UserInputState.Begin unless it is an intentional hold action, then call ContextActions:SetTitle and ContextActions:SetPosition. Store every uniqueName and call ContextActions:UnbindAction in Destroy. Mouse button controls use Enum.UserInputType.MouseButton1, never Enum.KeyCode.MouseButton1.
+- Use the actual direct hub-scope control object ContextActions, never _G.Uhhhhhh.ContextActions. PC actions call ContextActions:BindAction(uniqueName, callback, false, keyOrInput), run only on Enum.UserInputState.Begin unless it is an intentional hold action, store every uniqueName, and unbind it in Destroy. Do not call SetTitle/SetPosition for PC actions. Mobile controls require a separate UI. Mouse button controls use Enum.UserInputType.MouseButton1, never Enum.KeyCode.MouseButton1.
 - Migrate generated effect systems (effect parts, meshes, lightning, projectiles, particles, sounds, camera shake) together with the abilities that call them. Per-frame effect advancement belongs in Update and all effect instances/connections belong to tracked cleanup state.
 - Legacy RemoteEvents created locally do not replicate by themselves. Do not replace them with BindableEvent and do not preserve fake FireServer/OnClientEvent synchronization as if it worked; remove the fake network layer and call the local visible effect/ability functions directly.
 - Executor filesystem APIs such as getgenv, isfolder, makefolder, isfile, writefile, getcustomasset, and getsynasset are unavailable hub dependencies. Replace optional music with declared m.Assets/configurable Roblox asset IDs and keep the module functional when an external audio file cannot be migrated.
@@ -409,7 +409,9 @@ def call_planner(prompt: str, provider: str, api_key: str, requested_model: str)
     if not free and not api_key.strip():
         raise HTTPException(400, "An API key is required for the selected provider")
     endpoint, default_model = (AI_ENDPOINT, AI_MODEL) if free else PAID_PROVIDERS[provider]
-    model = requested_model.strip()[:150] or default_model
+    # Anonymous/free conversions use one fixed model so separate chunks do not
+    # silently route to different backends. BYOK providers may override it.
+    model = default_model if free else (requested_model.strip()[:150] or default_model)
     headers = {"Content-Type": "application/json", "User-Agent": "Bloodmoon-Converter/2.0"}
     if provider == "anthropic":
         headers.update({"x-api-key": api_key.strip(), "anthropic-version": "2023-06-01"})
@@ -417,12 +419,14 @@ def call_planner(prompt: str, provider: str, api_key: str, requested_model: str)
     else:
         if not free:
             headers["Authorization"] = "Bearer " + api_key.strip()
-        body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 24000}
+        body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "top_p": 1, "max_tokens": 32000}
         if provider == "openrouter":
             headers.update({"HTTP-Referer": "https://bloodmoon-six.vercel.app", "X-Title": "Bloodmoon"})
             body.update({"include_reasoning": False, "reasoning_effort": "none"})
-        if provider in {"free", "kilo"}:
-            body.update({"include_reasoning": False, "reasoning_effort": "low"})
+        if free:
+            body.update({"include_reasoning": False, "seed": 42, "response_format": {"type": "json_object"}})
+        elif provider == "kilo":
+            body.update({"include_reasoning": False})
     request = urllib.request.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=240) as response:
@@ -462,7 +466,7 @@ async def ai_convert(file: UploadFile = File(...), name: str = Form(""), descrip
         raise HTTPException(413, "This source is too large for the anonymous AI context. Use a smaller script or the static converter.")
     display_name = safe_name(name, Path(file.filename or "script.lua").stem)
     inventory = hybrid_analyze(source, file.filename or "script.lua")
-    contract = "Uhhhhhh injects ContextActions, ReanimateFling, AnimLib and AssetGetPathFromFilename into module factories. SetC0C1Joint is a local helper, not an injected global. Init and Update receive the hub figure; Destroy may receive nil. The builder owns lifecycle and wiring. Preserve existing behavior only when supported; warn about missing dependencies."
+    contract = "Uhhhhhh injects ContextActions, AnimLib and AssetGetPathFromFilename into module factories. SetC0C1Joint is a local helper, not an injected global. Init and Update receive the hub figure; Destroy may receive nil. The builder owns lifecycle and wiring. Never emit ReanimateFling, fling, permadeath, character-death, respawn-bypass, loadstring, HttpGet, or GetObjects execution. PC ContextActions use createTouchButton=false; mobile controls require a separate UI and must remain a blocker until generated. Preserve existing behavior only when supported; warn about missing dependencies."
     asyncio = __import__("asyncio")
     # Parse without executing uploaded code. Do not guess context if AST fails.
     context_job = JOBS / uuid.uuid4().hex
@@ -536,6 +540,20 @@ async def ai_convert(file: UploadFile = File(...), name: str = Form(""), descrip
     static_ok = bool(checks.get("luau-ast", {}).get("ok") and checks.get("luau-compile", {}).get("ok"))
     source_ast, source_ast_meta = await __import__("asyncio").to_thread(deterministic_engine.parse_ast, project / "source.lua", tool_dir)
     preservation = preservation_analyze(source, source_ast, code) if source_ast else {"available": False, "reason": source_ast_meta.get("error", "Source AST unavailable")}
+    ai_audit_blockers = []
+    prohibited_patterns = {
+        "PROHIBITED_FLING": r"\b(?:ReanimateFling|fling)\b",
+        "PROHIBITED_EXTERNAL_EXECUTION": r"\b(?:loadstring|HttpGet|GetObjects)\b",
+        "PROHIBITED_DEATH_LOGIC": r"\b(?:BreakJoints|TakeDamage)\b|\.Health\s*=",
+        "PC_TOUCH_BUTTONS_EMITTED": r"ContextActions\s*:\s*BindAction\s*\([\s\S]{0,300}?\btrue\s*,",
+    }
+    for code_name, pattern in prohibited_patterns.items():
+        if re.search(pattern, code):
+            ai_audit_blockers.append(code_name)
+    if re.search(r"FindFirstChild\s*\(\s*[\"'](?:RootJoint|Neck|Right Shoulder|Left Shoulder|Right Hip|Left Hip)[\"']", code):
+        ai_audit_blockers.append("UNPROVEN_NAMED_JOINT_BINDING")
+    if inventory.controls:
+        ai_audit_blockers.append("MOBILE_ABILITY_UI_REQUIRED")
     report = {
         "provider": used_provider,
         "model": used_model,
@@ -544,6 +562,7 @@ async def ai_convert(file: UploadFile = File(...), name: str = Form(""), descrip
         "static_checks_passed": static_ok,
         "static_checks": checks,
         "preservation_audit": preservation,
+        "ai_output_audit": {"blockers": ai_audit_blockers, "passed": not ai_audit_blockers},
         "contract_fields_present": True,
         "limitations": ["AI output is untrusted and may omit or alter behavior; manual review and Roblox runtime testing are required.", "Static parsing and compilation do not verify external dependencies or behavior."],
         "pipeline": "chunked_ai_evidence_review_v1",
@@ -567,7 +586,7 @@ async def ai_convert(file: UploadFile = File(...), name: str = Form(""), descrip
         "keys": [x.get("value", "") for x in inventory.controls],
         "assets": plan.get("assets", {"sounds": [], "meshes": [], "textures": []}),
         "roles": [{"name": x["name"], "line": 0, "role": "ability"} for x in plan.get("abilities", [])],
-        "blockers": [{"type": "AI_REVIEW_REQUIRED", "message": "AI-generated code is experimental; effects and behavior may be altered or missing. Review the preservation audit and test in Roblox.", "severity": "high"}] + ([{"type": "STATIC_CHECK_FAILED", "message": "Luau parse or compile failed; inspect the report.", "severity": "high"}] if not static_ok else []) + [{"type": "migration-warning", "message": x, "severity": "medium"} for x in plan.get("warnings", [])],
+        "blockers": [{"type": "AI_REVIEW_REQUIRED", "message": "AI-generated code is experimental; effects and behavior may be altered or missing. Review the preservation audit and test in Roblox.", "severity": "high"}] + ([{"type": "STATIC_CHECK_FAILED", "message": "Luau parse or compile failed; inspect the report.", "severity": "high"}] if not static_ok else []) + [{"type": code_name, "message": code_name.replace("_", " ").title(), "severity": "high"} for code_name in ai_audit_blockers] + [{"type": "migration-warning", "message": x, "severity": "medium"} for x in plan.get("warnings", [])],
     }
     return JSONResponse({
         "job_id": job_id,
